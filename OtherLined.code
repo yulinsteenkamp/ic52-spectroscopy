@@ -1,0 +1,200 @@
+
+import numpy as np
+from scipy.optimize import curve_fit
+from scipy.integrate import simpson
+import matplotlib.pyplot as plt
+
+# the three spectra (text files made with wspectext: column 1 = wavelength, column 2 = flux)
+frames = ["obj58flx", "obj59flx", "obj60flx"]
+
+z_guess = 0.00665    # rough redshift, only used to find where each line is
+scale = 1e-15        # flux scale used inside the fit (keeps the numbers near 1)
+sqrt2pi = np.sqrt(2 * np.pi)
+snr_limit = 3.0      # lines with S/N below this are marked "weak" in the figures
+
+# units used in the figures
+flux_unit = r"erg s$^{-1}$ cm$^{-2}$"                 # line flux
+density_unit = r"erg s$^{-1}$ cm$^{-2}$ $\mathrm{\AA}^{-1}$"   # flux density (spectrum)
+ang = r"$\mathrm{\AA}$"                               # Angstrom
+
+# single lines: name, rest wavelength in air (Angstrom), half-width of the fitting window (Angstrom)
+single_lines = [
+    ("[O II] 3727", 3727.4, 20),
+    ("H gamma", 4340.47, 15),
+    ("[O III] 4959", 4958.91, 15),
+    ("He I 5876", 5875.62, 15),
+    ("[O I] 6300", 6300.30, 15),
+]
+
+# H alpha and the two [N II] lines are close together, so they have to be fitted together
+# (otherwise the wings of H alpha would spoil the weak [N II] 6548 fit)
+group_lines = [("[N II] 6548", 6548.05), ("H alpha", 6562.80), ("[N II] 6583", 6583.45)]
+group_halfwidth = 40
+# only these lines from the group fit are reported; H alpha and [N II] 6583 come from splot
+report_group = ["[N II] 6548"]
+
+
+def flux_error(pcov, i_amp, i_sig, amp, sig):
+    # error on the flux = amp * sig * sqrt(2 pi), using the fit covariance matrix
+    jac = np.array([sig * sqrt2pi, amp * sqrt2pi])
+    cov = pcov[np.ix_([i_amp, i_sig], [i_amp, i_sig])]
+    return np.sqrt(jac @ cov @ jac) * scale
+
+
+def run_single(wave, flux, name, rest, half):
+    # fit one line: a Gaussian plus a sloping continuum
+    centre = rest * (1 + z_guess)
+    use = np.abs(wave - centre) < half
+    x = wave[use]
+    y = flux[use] / scale
+
+    def model(x, amp, mu, sig, c0, c1):
+        return amp * np.exp(-0.5 * ((x - mu) / sig) ** 2) + c0 + c1 * (x - centre)
+
+    mu0 = x[np.argmax(y)]
+    p0 = [y.max() - np.median(y), mu0, 2.4, np.median(y), 0.0]
+    low = [0, mu0 - 6, 1.0, -np.inf, -np.inf]
+    high = [np.inf, mu0 + 6, 6.0, np.inf, np.inf]
+    popt, pcov = curve_fit(model, x, y, p0=p0, bounds=(low, high))
+    amp, mu, sig, c0, c1 = popt
+    noise = np.std(y - model(x, *popt))
+    cont = c0 + c1 * (mu - centre)
+
+    # check: add up the data above the continuum within 3 sigma of the line (Simpson's rule)
+    near = np.abs(x - mu) < 3 * sig
+    above = y[near] - (c0 + c1 * (x[near] - centre))
+    flux_simpson = simpson(above, x=x[near]) * scale
+
+    result = {
+        "name": name, "rest": rest,
+        "centre": mu, "centre_err": np.sqrt(pcov[1, 1]),
+        "flux": amp * sig * sqrt2pi * scale, "flux_err": flux_error(pcov, 0, 2, amp, sig),
+        "flux_simpson": flux_simpson,
+        "ew": -amp * sig * sqrt2pi / cont,           # negative = emission (same as splot)
+        "fwhm": 2.355 * sig,
+        "snr": amp / noise,
+    }
+    curve = (x, y * scale, model(x, *popt) * scale)
+    return result, curve
+
+
+def run_group(wave, flux):
+    # fit H alpha and both [N II] lines together with one common line width
+    centre = group_lines[1][1] * (1 + z_guess)
+    use = np.abs(wave - centre) < group_halfwidth
+    x = wave[use]
+    y = flux[use] / scale
+    c1_guess = [r * (1 + z_guess) for _, r in group_lines]
+
+    def model(x, a1, m1, a2, m2, a3, m3, sig, c0, c1):
+        total = c0 + c1 * (x - centre)
+        for a, m in [(a1, m1), (a2, m2), (a3, m3)]:
+            total = total + a * np.exp(-0.5 * ((x - m) / sig) ** 2)
+        return total
+
+    p0 = [1, c1_guess[0], 10, c1_guess[1], 2, c1_guess[2], 2.4, np.median(y), 0.0]
+    low = [0, c1_guess[0] - 5, 0, c1_guess[1] - 5, 0, c1_guess[2] - 5, 1.0, -np.inf, -np.inf]
+    high = [np.inf, c1_guess[0] + 5, np.inf, c1_guess[1] + 5, np.inf, c1_guess[2] + 5, 6.0, np.inf, np.inf]
+    popt, pcov = curve_fit(model, x, y, p0=p0, bounds=(low, high))
+    noise = np.std(y - model(x, *popt))
+    sig = popt[6]
+    results = []
+    for k, (name, rest) in enumerate(group_lines):
+        amp, mu = popt[2 * k], popt[2 * k + 1]
+        cont = popt[7] + popt[8] * (mu - centre)
+        results.append({
+            "name": name, "rest": rest,
+            "centre": mu, "centre_err": np.sqrt(pcov[2 * k + 1, 2 * k + 1]),
+            "flux": amp * sig * sqrt2pi * scale, "flux_err": flux_error(pcov, 2 * k, 6, amp, sig),
+            "flux_simpson": np.nan,      # not done for blended lines
+            "ew": -amp * sig * sqrt2pi / cont,
+            "fwhm": 2.355 * sig,
+            "snr": amp / noise,
+        })
+    curve = (x, y * scale, model(x, *popt) * scale)
+    return results, curve
+
+
+# fit every frame
+all_results = {}
+all_panels = {}
+for frame in frames:
+    data = np.loadtxt(frame + ".txt")
+    wave = data[:, 0]
+    flux = data[:, 1]
+    results = []
+    panels = []                      # one entry per subplot: (title, curve, results)
+    for name, rest, half in single_lines:
+        res, curve = run_single(wave, flux, name, rest, half)
+        results.append(res)
+        panels.append((name, curve, [res]))
+    group_res, group_curve = run_group(wave, flux)
+    group_res = [r for r in group_res if r["name"] in report_group]
+    results = results + group_res
+    panels.append(("[N II] 6548 (fitted with H alpha and [N II] 6583)", group_curve, group_res))
+    all_results[frame] = results
+    all_panels[frame] = panels
+
+# print the results for each frame and save them to a file
+# (flux in erg/s/cm^2, centre and FWHM and EW in Angstrom)
+out = open("line_fits.csv", "w")
+out.write("frame,line,rest,centre,centre_err,flux,flux_err,flux_simpson,ew,fwhm,snr,z\n")
+for frame in frames:
+    print("\n", frame)
+    print("%-14s %9s %6s %10s %9s %10s %8s %6s %5s %8s" %
+          ("line", "centre", "+/-", "flux", "+/-", "Simpson", "EW", "FWHM", "S/N", "z"))
+    for r in all_results[frame]:
+        z = r["centre"] / r["rest"] - 1
+        print("%-14s %9.2f %6.2f %10.3e %9.2e %10.3e %8.2f %6.2f %5.1f %8.5f" %
+              (r["name"], r["centre"], r["centre_err"], r["flux"], r["flux_err"],
+               r["flux_simpson"], r["ew"], r["fwhm"], r["snr"], z))
+        out.write("%s,%s,%.2f,%.3f,%.3f,%.4e,%.3e,%.4e,%.3f,%.3f,%.2f,%.6f\n" %
+                  (frame, r["name"], r["rest"], r["centre"], r["centre_err"], r["flux"], r["flux_err"],
+                   r["flux_simpson"], r["ew"], r["fwhm"], r["snr"], z))
+out.close()
+
+# mean and scatter of the three frames
+print("\nMEAN OF THE THREE FRAMES (+/- scatter between frames)")
+print("%-14s %9s %7s %10s %9s %8s %6s %8s" % ("line", "centre", "+/-", "flux", "+/-", "EW", "+/-", "z"))
+for i in range(len(all_results[frames[0]])):
+    name = all_results[frames[0]][i]["name"]
+    centre = np.array([all_results[f][i]["centre"] for f in frames])
+    flux = np.array([all_results[f][i]["flux"] for f in frames])
+    ew = np.array([all_results[f][i]["ew"] for f in frames])
+    z = centre / all_results[frames[0]][i]["rest"] - 1
+    print("%-14s %9.2f %7.2f %10.3e %9.2e %8.2f %6.2f %8.5f" %
+          (name, centre.mean(), centre.std(ddof=1), flux.mean(), flux.std(ddof=1),
+           ew.mean(), ew.std(ddof=1), z.mean()))
+
+# one figure per frame: each subplot is a zoom on one line with its fit and measured values
+data_colour = "black"
+fit_colour = "deeppink"
+for frame in frames:
+    fig, axes = plt.subplots(2, 3, figsize=(12, 7))
+    for ax, (title, (x, y, fit), res_list) in zip(axes.flat, all_panels[frame]):
+        ax.plot(x, y, color=data_colour, linewidth=1, label="Spectrum")
+        ax.plot(x, fit, color=fit_colour, linewidth=1.4, label="Fit")
+        ax.set_title(title, fontsize=10)
+        ax.tick_params(labelsize=8)
+        # leave some room at the top of the panel for the text and the legend
+        ymin, ymax = ax.get_ylim()
+        extra = 0.45
+        ax.set_ylim(ymin, ymax + extra * (ymax - ymin))
+        ax.legend(loc="upper right", fontsize=7, frameon=False)
+        # text with the measured values and their units
+        text = ""
+        for r in res_list:
+            weak = "  (weak)" if r["snr"] < snr_limit else ""
+            text += r"F = %.2e $\pm$ %.1e %s%s" % (r["flux"], r["flux_err"], flux_unit, weak) + "\n"
+            text += r"centre = %.1f %s,  EW = %.1f %s" % (r["centre"], ang, r["ew"], ang) + "\n"
+        ax.text(0.03, 0.97, text.rstrip(), transform=ax.transAxes, fontsize=6.5,
+                verticalalignment="top", color="black",
+                bbox=dict(facecolor="white", alpha=0.8, edgecolor="none"))
+    for ax in axes[-1]:
+        ax.set_xlabel(r"Observed wavelength ($\mathrm{\AA}$)", fontsize=9)
+    for ax in axes[:, 0]:
+        ax.set_ylabel("Flux density (" + density_unit + ")", fontsize=9)
+    fig.suptitle("IC 52 emission-line fits: " + frame, fontsize=11)
+    fig.tight_layout()
+    fig.savefig("line_fits_" + frame + ".png", dpi=200)
+plt.show()
