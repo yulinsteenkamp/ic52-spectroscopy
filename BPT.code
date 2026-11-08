@@ -1,0 +1,62 @@
+# BPT diagram and Balmer decrement for IC 52
+import numpy as np
+import matplotlib.pyplot as plt
+
+# line fluxes measured in splot, one value per frame (obj58, obj59, obj60)
+hbeta = np.array([1.97e-14, 2.06e-14, 1.61e-14])
+oiii = np.array([4.77e-14, 5.11e-14, 3.99e-14])
+halpha = np.array([6.82e-14, 7.03e-14, 5.49e-14])
+nii = np.array([7.39e-15, 7.46e-15, 6.10e-15])
+
+# line ratios for each frame
+x = np.log10(nii / halpha)      # log([N II]6583 / Halpha)
+y = np.log10(oiii / hbeta)      # log([O III]5007 / Hbeta)
+decrement = halpha / hbeta      # Balmer decrement
+
+# mean and scatter between the three frames
+x_mean = x.mean()
+y_mean = y.mean()
+x_err = x.std(ddof=1)
+y_err = y.std(ddof=1)
+
+print("log([N II]/Halpha) = %.3f +/- %.3f" % (x_mean, x_err))
+print("log([O III]/Hbeta) = %.3f +/- %.3f" % (y_mean, y_err))
+print("Balmer decrement Ha/Hb = %.2f +/- %.2f" % (decrement.mean(), decrement.std(ddof=1)))
+
+# dividing lines
+xk = np.linspace(-1.5, 0.0, 200)   # Kauffmann et al. 2003 (valid for x < 0.05)
+yk = 0.61 / (xk - 0.05) + 1.30
+xs = np.linspace(-1.5, 0.4, 200)   # Kewley et al. 2001 (valid for x < 0.47)
+ys = 0.61 / (xs - 0.47) + 1.19
+
+# make the plot
+pink = "deeppink"
+fig, ax = plt.subplots(figsize=(6.5, 5.5))
+
+# dividing lines
+ax.plot(xk, yk, "--", color="black", linewidth=1.2, label="Kauffmann et al. (2003)")
+ax.plot(xs, ys, "-", color="black", linewidth=1.2, label="Kewley et al. (2001)")
+
+# data: the mean of the three frames
+ax.errorbar(x_mean, y_mean, xerr=x_err, yerr=y_err, fmt="o", color=pink,
+            markersize=8, capsize=3, label="IC 52 (mean of 3 frames)")
+
+# labels for the regions of the diagram (placed inside the plot)
+ax.text(-1.4, 0.0, "Star-forming", color=pink, fontsize=11)
+ax.text(-0.36, 0.2, "Composite", color=pink, fontsize=11, rotation=-62, ha="center", va="center")
+ax.text(0.02, 0.35, "AGN /\nLINER", color=pink, fontsize=11)
+
+# label next to the data point (no line)
+ax.text(x_mean + 0.05, y_mean + 0.05, "IC 52", color=pink, fontsize=10)
+
+ax.set_xlim(-1.5, 0.5)
+ax.set_ylim(-1.0, 1.0)
+ax.set_xlabel(r"log([N II] $\lambda$6583 / H$\alpha$)", fontsize=11)
+ax.set_ylabel(r"log([O III] $\lambda$5007 / H$\beta$)", fontsize=11)
+ax.set_title("BPT diagram of IC 52", fontsize=12)    # title of the plot
+ax.minorticks_on()
+#ax.grid(alpha=0.2)
+ax.legend(loc="lower left", fontsize=8, framealpha=0.9)
+fig.tight_layout()
+fig.savefig("bpt_diagram_ic52.png", dpi=200)
+plt.show()
