@@ -1,0 +1,49 @@
+# Plot the mean of the three flux calibrated spectra of IC 52 with the emission lines labelled
+import numpy as np
+import matplotlib.pyplot as plt
+
+# the three spectra (text files made with wspectext: column 1 = wavelength, column 2 = flux)
+frames = ["obj58flx", "obj59flx", "obj60flx"]
+
+# read the spectra (all three have the same wavelength grid)
+wave = np.loadtxt(frames[0] + ".txt")[:, 0]
+flux = np.array([np.loadtxt(f + ".txt")[:, 1] for f in frames])
+
+# the mean of the three exposures
+mean_flux = flux.mean(axis=0)
+
+# lines to label: name, rest wavelength in air (Angstrom)
+lines = [
+    ("[O II] 3727", 3727.4),
+    ("H$\\gamma$", 4340.47),
+    ("H$\\beta$", 4861.33),
+    ("[O III] 4959", 4958.91),
+    ("[O III] 5007", 5006.84),
+    ("He I 5876", 5875.62),
+    ("[O I] 6300", 6300.30),
+    ("H$\\alpha$ + [N II]", 6562.80),   # H alpha and the two [N II] lines are close together
+]
+z_label = 0.0065     # rough redshift, only used to place the labels
+
+pink = "deeppink"
+fig, ax = plt.subplots(figsize=(10, 4.5))
+ax.plot(wave, mean_flux, color=pink, linewidth=0.8)
+
+# label each line just above its peak
+top = mean_flux.max()
+for name, rest in lines:
+    obs = rest * (1 + z_label)
+    near = np.abs(wave - obs) < 15
+    peak = mean_flux[near].max()
+    ax.annotate(name, xy=(obs, peak), xytext=(obs, peak + 0.06 * top),
+                rotation=90, ha="center", va="bottom", fontsize=8)
+
+ax.set_xlim(wave[0], wave[-1])
+ax.set_ylim(0, 1.3 * top)
+ax.set_xlabel(r"Wavelength ($\mathrm{\AA}$)", fontsize=11)
+ax.set_ylabel(r"Flux density (erg s$^{-1}$ cm$^{-2}$ $\mathrm{\AA}^{-1}$)", fontsize=11)
+ax.set_title("Mean flux-calibrated spectrum of IC 52", fontsize=12)
+ax.grid(False)
+fig.tight_layout()
+fig.savefig("mean_spectrum_ic52.png", dpi=200)
+plt.show()
